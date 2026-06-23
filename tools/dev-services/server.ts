@@ -85,7 +85,12 @@ async function tcpHealthCheck(port: number, timeoutMs = 60000): Promise<boolean>
 
 function isPortConflict(msg: string): boolean {
   const l = msg.toLowerCase();
-  return l.includes("address already in use") || l.includes("eaddrinuse") || l.includes("bind: address");
+  return (
+    l.includes("address already in use") ||
+    l.includes("eaddrinuse") ||
+    l.includes("bind: address") ||
+    l.includes("is already in use")
+  );
 }
 
 function isSofaConflict(logs: string[]): boolean {
@@ -234,14 +239,15 @@ async function startFrontendService(svc: FrontendService, retried = false) {
     processMap.delete(svc.name);
     if (code === 0) {
       setState(svc.name, "stopped");
-    } else if (!retried && isPortConflict(feError)) {
-      pushLog(svc.name, `[auto-fix] Port conflict on :${svc.port} — auto-fixing`);
-      const freed = await freePort(svc.port, svc.name);
-      if (freed) {
-        pushLog(svc.name, `[auto-fix] Restarting ${svc.name}…`);
+    } else if (!retried) {
+      const recentLogs = logBuffer.get(svc.name) ?? [];
+      const portInLogs = recentLogs.some((l) => isPortConflict(l));
+      if (portInLogs || isPortConflict(feError)) {
+        pushLog(svc.name, `[auto-fix] Port :${svc.port} in use — freeing and restarting`);
+        await freePorts([svc.port], svc.name);
         startFrontendService(svc, true);
       } else {
-        setState(svc.name, "error", undefined, `Port :${svc.port} conflict — could not free`);
+        setState(svc.name, "error", undefined, `Exited ${code}${feError ? ": " + feError : ""}`);
       }
     } else {
       setState(svc.name, "error", undefined, `Exited ${code}${feError ? ": " + feError : ""}`);
