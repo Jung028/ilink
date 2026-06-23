@@ -1,6 +1,9 @@
 import index from "./index.html";
 import { infraGroups, services, frontendServices, type InfraGroup, type JavaService, type FrontendService } from "./config";
 import { join } from "path";
+import Anthropic from "@anthropic-ai/sdk";
+
+const anthropic = new Anthropic();
 
 type State = "running" | "stopped" | "starting" | "building" | "error";
 
@@ -304,6 +307,24 @@ async function stopAll() {
   for (const g of infraGroups) await stopInfra(g);
 }
 
+function buildSystemPrompt(focusedService?: string): string {
+  const states: Record<string, string> = {};
+  for (const [k, v] of stateMap) states[k] = v.lastError ? `${v.state} — ${v.lastError}` : v.state;
+  const recentLogs = focusedService ? (logBuffer.get(focusedService) ?? []).slice(-60).join("\n") : "";
+  return [
+    "You are a dev assistant embedded in a local microservices dashboard.",
+    "The user is running Java SOFABoot services and frontend apps on their local machine.",
+    "",
+    "Current service states:",
+    JSON.stringify(states, null, 2),
+    "",
+    focusedService ? `Recent logs for ${focusedService}:\n${recentLogs}` : "",
+    "",
+    "Help diagnose and fix issues. When suggesting shell commands, wrap them in ```sh code blocks.",
+    "Be concise — the user is a developer who wants direct answers.",
+  ].join("\n");
+}
+
 process.on("SIGINT", async () => {
   for (const s of services) stopService(s.name);
   for (const s of frontendServices) stopFrontendService(s.name);
@@ -330,6 +351,48 @@ Bun.serve({
       },
     },
     "/api/stop-all":  { POST: () => { stopAll();  return Response.json({ ok: true }); } },
+    "/api/chat": {
+      POST: async (req) => {
+        const { message, service } = await req.json() as { message: string; service?: string };
+        const enc = new TextEncoder();
+        const stream = new ReadableStream({
+          async start(ctrl) {
+            try {
+              const s = anthropic.messages.stream({
+                model: "claude-sonnet-4-6",
+                max_tokens: 1024,
+                system: buildSystemPrompt(service),
+                messages: [{ role: "user", content: message }],
+              });
+              for await (const chunk of s) {
+                if (chunk.type === "content_block_delta" && chunk.delta.type === "text_delta") {
+                  ctrl.enqueue(enc.encode(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`));
+                }
+              }
+            } catch (e: any) {
+              ctrl.enqueue(enc.encode(`data: ${JSON.stringify({ text: `\n[error] ${e.message}` })}\n\n`));
+            }
+            ctrl.enqueue(enc.encode("data: [DONE]\n\n"));
+            ctrl.close();
+          },
+        });
+        return new Response(stream, {
+          headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+        });
+      },
+    },
+    "/api/run-command": {
+      POST: async (req) => {
+        const { command } = await req.json() as { command: string };
+        const proc = Bun.spawn(["sh", "-c", command], { stdout: "pipe", stderr: "pipe" });
+        const [out, err] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
+        await proc.exited;
+        return Response.json({ output: (out + err).trim() });
+      },
+    },
     "/api/:name/start": {
       POST: (req: Request & { params: { name: string } }) => {
         const { name } = req.params;

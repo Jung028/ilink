@@ -304,6 +304,133 @@ function LogPanel({
   );
 }
 
+interface ChatMessage { role: "user" | "assistant"; text: string; }
+
+function parseBlocks(text: string): Array<{ type: "text" | "code"; content: string }> {
+  const parts: Array<{ type: "text" | "code"; content: string }> = [];
+  const re = /```(?:sh|bash|shell)?\n([\s\S]*?)```/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push({ type: "text", content: text.slice(last, m.index) });
+    parts.push({ type: "code", content: m[1].trim() });
+    last = re.lastIndex;
+  }
+  if (last < text.length) parts.push({ type: "text", content: text.slice(last) });
+  return parts;
+}
+
+function ChatPanel({ focusedService }: { focusedService: string }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const [runOutput, setRunOutput] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  async function send() {
+    const msg = input.trim();
+    if (!msg || streaming) return;
+    setInput("");
+    setMessages(prev => [...prev, { role: "user", text: msg }]);
+    setStreaming(true);
+    setMessages(prev => [...prev, { role: "assistant", text: "" }]);
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg, service: focusedService }),
+    });
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const raw = line.slice(6);
+        if (raw === "[DONE]") break;
+        try {
+          const { text } = JSON.parse(raw);
+          setMessages(prev => {
+            const copy = [...prev];
+            copy[copy.length - 1] = { role: "assistant", text: copy[copy.length - 1].text + text };
+            return copy;
+          });
+        } catch {}
+      }
+    }
+    setStreaming(false);
+  }
+
+  async function runCommand(cmd: string) {
+    setRunOutput("running…");
+    const res = await fetch("/api/run-command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: cmd }),
+    });
+    const { output } = await res.json();
+    setRunOutput(output || "(no output)");
+  }
+
+  return (
+    <div style={{ background: "#0a0c14", border: "1px solid #2d3148", borderRadius: 10, display: "flex", flexDirection: "column", height: 320, marginTop: 20 }}>
+      <div style={{ padding: "8px 14px", borderBottom: "1px solid #1e2130", display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: "#6366f1" }}>CLAUDE</span>
+        <span style={{ fontSize: 11, color: "#475569" }}>context: {focusedService}</span>
+        {messages.length > 0 && (
+          <button onClick={() => { setMessages([]); setRunOutput(null); }} style={{ marginLeft: "auto", background: "none", border: "1px solid #2d3148", color: "#475569", borderRadius: 5, padding: "2px 8px", fontSize: 11, cursor: "pointer" }}>Clear</button>
+        )}
+      </div>
+      <div style={{ flex: 1, overflow: "auto", padding: "10px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+        {messages.length === 0 && (
+          <p style={{ color: "#334155", fontSize: 12, margin: "auto 0" }}>Ask about any service — errors, logs, fixes. Context from "{focusedService}" is included automatically.</p>
+        )}
+        {messages.map((m, i) => (
+          <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
+            {m.role === "user" ? (
+              <div style={{ background: "#1e2130", borderRadius: 8, padding: "6px 12px", fontSize: 13, maxWidth: "80%", color: "#e2e8f0" }}>{m.text}</div>
+            ) : (
+              <div style={{ fontSize: 13, maxWidth: "90%", color: "#cbd5e1", display: "flex", flexDirection: "column", gap: 6 }}>
+                {parseBlocks(m.text).map((b, j) =>
+                  b.type === "text" ? (
+                    <span key={j} style={{ whiteSpace: "pre-wrap" }}>{b.content}</span>
+                  ) : (
+                    <div key={j} style={{ background: "#1a1c2e", borderRadius: 6, padding: "8px 12px", fontFamily: "monospace", fontSize: 12 }}>
+                      <div style={{ color: "#94a3b8", marginBottom: 4 }}>{b.content}</div>
+                      <button onClick={() => runCommand(b.content)} style={{ background: "#143326", color: "#4ade80", border: "none", borderRadius: 5, padding: "3px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>▶ Run</button>
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+        {runOutput && (
+          <pre style={{ background: "#1a1c2e", borderRadius: 6, padding: "8px 12px", fontSize: 11, color: "#94a3b8", whiteSpace: "pre-wrap", marginTop: 4 }}>{runOutput}</pre>
+        )}
+        <div ref={bottomRef} />
+      </div>
+      <div style={{ padding: "8px 12px", borderTop: "1px solid #1e2130", display: "flex", gap: 8 }}>
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+          placeholder="Ask anything… (Enter to send)"
+          style={{ flex: 1, background: "#1e2130", border: "1px solid #2d3148", borderRadius: 6, padding: "6px 10px", color: "#e2e8f0", fontSize: 13, outline: "none" }}
+        />
+        <button onClick={send} disabled={streaming} style={{ background: "#6366f1", color: "#fff", border: "none", borderRadius: 6, padding: "6px 16px", fontWeight: 600, fontSize: 13, cursor: streaming ? "not-allowed" : "pointer", opacity: streaming ? 0.6 : 1 }}>
+          {streaming ? "…" : "Send"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [status, setStatus] = useState<StatusMap>({});
   const [logs, setLogs] = useState<Record<string, string[]>>({});
@@ -503,6 +630,9 @@ function App() {
           onSelect={setSelectedLog}
           onClear={clearLogs}
         />
+
+        {/* Claude Chat Panel */}
+        <ChatPanel focusedService={selectedLog} />
       </div>
     </>
   );
