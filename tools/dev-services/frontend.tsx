@@ -42,6 +42,11 @@ const FRONTEND_PORT: Record<string, number> = {
   imerchantmng: 8021,
 };
 
+const FRONTEND_PATH: Record<string, string> = {
+  ipay: "/login",
+  imerchantmng: "",
+};
+
 const DEFAULT_SELECTION = Object.fromEntries(ALL_NAMES.map((n) => [n, true]));
 
 function loadSelection(): Record<string, boolean> {
@@ -616,7 +621,7 @@ function App() {
                   onToggle={() => toggleSelection(name)}
                   onStart={() => api(`/api/${name}/start`, "POST")}
                   onStop={() => api(`/api/${name}/stop`, "POST")}
-                  openUrl={`http://localhost:${FRONTEND_PORT[name]}`}
+                  openUrl={`http://localhost:${FRONTEND_PORT[name]}${FRONTEND_PATH[name] ?? ""}`}
                 />
               ))}
             </div>
