@@ -1,5 +1,5 @@
 import index from "./index.html";
-import { infraGroups, services, type InfraGroup, type JavaService } from "./config";
+import { infraGroups, services, frontendServices, type InfraGroup, type JavaService, type FrontendService } from "./config";
 import { join } from "path";
 
 type State = "running" | "stopped" | "starting" | "building" | "error";
@@ -16,6 +16,7 @@ const wsClients = new Set<import("bun").ServerWebSocket<unknown>>();
 
 for (const g of infraGroups) stateMap.set(g.name, { state: "stopped" });
 for (const s of services) stateMap.set(s.name, { state: "stopped" });
+for (const s of frontendServices) stateMap.set(s.name, { state: "stopped" });
 
 function pushLog(service: string, line: string) {
   if (!logBuffer.has(service)) logBuffer.set(service, []);
@@ -134,6 +135,32 @@ function stopService(name: string) {
   setState(name, "stopped");
 }
 
+async function startFrontendService(svc: FrontendService) {
+  if (stateMap.get(svc.name)?.state === "running") return;
+  setState(svc.name, "starting");
+  pushLog(svc.name, `[start] ${svc.startCmd.join(" ")} in ${svc.dir}`);
+  const proc = Bun.spawn(svc.startCmd, {
+    cwd: svc.dir,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  processMap.set(svc.name, proc);
+  setState(svc.name, "running", proc.pid);
+  pipeStream(proc.stdout, svc.name);
+  pipeStream(proc.stderr, svc.name);
+  proc.exited.then((code) => {
+    pushLog(svc.name, `[exit] exited with code ${code}`);
+    processMap.delete(svc.name);
+    setState(svc.name, code === 0 ? "stopped" : "error");
+  });
+}
+
+function stopFrontendService(name: string) {
+  processMap.get(name)?.kill();
+  processMap.delete(name);
+  setState(name, "stopped");
+}
+
 async function startInfra(group: InfraGroup) {
   if (stateMap.get(group.name)?.state === "running") return;
   setState(group.name, "starting");
@@ -171,18 +198,24 @@ async function stopInfra(group: InfraGroup) {
   setState(group.name, "stopped");
 }
 
-async function startAll() {
-  for (const g of infraGroups) await startInfra(g);
-  await Promise.all(services.map((s) => startService(s)));
+async function startAll(selected: string[]) {
+  const sel = new Set(selected);
+  for (const g of infraGroups) if (sel.has(g.name)) await startInfra(g);
+  await Promise.all([
+    ...services.filter((s) => sel.has(s.name)).map((s) => startService(s)),
+    ...frontendServices.filter((s) => sel.has(s.name)).map((s) => startFrontendService(s)),
+  ]);
 }
 
 async function stopAll() {
   for (const s of services) stopService(s.name);
+  for (const s of frontendServices) stopFrontendService(s.name);
   for (const g of infraGroups) await stopInfra(g);
 }
 
 process.on("SIGINT", async () => {
   for (const s of services) stopService(s.name);
+  for (const s of frontendServices) stopFrontendService(s.name);
   for (const g of infraGroups) Bun.spawn(["docker", "compose", "-f", g.composePath, "down"]);
   process.exit(0);
 });
@@ -198,15 +231,23 @@ Bun.serve({
         return Response.json(out);
       },
     },
-    "/api/start-all": { POST: () => { startAll(); return Response.json({ ok: true }); } },
+    "/api/start-all": {
+      POST: async (req) => {
+        const { selected } = await req.json() as { selected: string[] };
+        startAll(selected);
+        return Response.json({ ok: true });
+      },
+    },
     "/api/stop-all":  { POST: () => { stopAll();  return Response.json({ ok: true }); } },
     "/api/:name/start": {
       POST: (req: Request & { params: { name: string } }) => {
         const { name } = req.params;
         const infra = infraGroups.find((g) => g.name === name);
         const svc = services.find((s) => s.name === name);
+        const fe = frontendServices.find((s) => s.name === name);
         if (infra) { startInfra(infra); return Response.json({ ok: true }); }
         if (svc)   { startService(svc); return Response.json({ ok: true }); }
+        if (fe)    { startFrontendService(fe); return Response.json({ ok: true }); }
         return Response.json({ error: "not found" }, { status: 404 });
       },
     },
@@ -215,8 +256,10 @@ Bun.serve({
         const { name } = req.params;
         const infra = infraGroups.find((g) => g.name === name);
         const svc = services.find((s) => s.name === name);
+        const fe = frontendServices.find((s) => s.name === name);
         if (infra) { stopInfra(infra); return Response.json({ ok: true }); }
         if (svc)   { stopService(svc.name); return Response.json({ ok: true }); }
+        if (fe)    { stopFrontendService(fe.name); return Response.json({ ok: true }); }
         return Response.json({ error: "not found" }, { status: 404 });
       },
     },

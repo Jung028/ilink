@@ -22,6 +22,9 @@ const STATE_LABEL: Record<State, string> = {
 
 const INFRA = ["postgres-redis", "kafka-nacos"];
 const SERVICES = ["iaccount", "iuser", "iwallet", "imerchant", "iriskops"];
+const FRONTENDS = ["ipay", "imerchantmng"];
+const ALL_NAMES = [...INFRA, ...SERVICES, ...FRONTENDS];
+
 const PORTS: Record<string, string> = {
   "postgres-redis": "5432, 6379",
   "kafka-nacos": "9092, 8848",
@@ -30,9 +33,25 @@ const PORTS: Record<string, string> = {
   iwallet: "8180",
   imerchant: "8188",
   iriskops: "8181",
+  ipay: "8089",
+  imerchantmng: "5173",
 };
 
-const ALL_NAMES = [...INFRA, ...SERVICES];
+const FRONTEND_PORT: Record<string, number> = {
+  ipay: 8089,
+  imerchantmng: 5173,
+};
+
+const DEFAULT_SELECTION = Object.fromEntries(ALL_NAMES.map((n) => [n, true]));
+
+function loadSelection(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem("dev-services-selection");
+    return raw ? { ...DEFAULT_SELECTION, ...JSON.parse(raw) } : DEFAULT_SELECTION;
+  } catch {
+    return DEFAULT_SELECTION;
+  }
+}
 
 function StatusDot({ state }: { state: State }) {
   const color = STATE_COLOR[state];
@@ -56,13 +75,19 @@ function StatusDot({ state }: { state: State }) {
 function ServiceCard({
   name,
   state,
+  selected,
+  onToggle,
   onStart,
   onStop,
+  openUrl,
 }: {
   name: string;
   state: State;
+  selected: boolean;
+  onToggle: () => void;
   onStart: () => void;
   onStop: () => void;
+  openUrl?: string;
 }) {
   const running = state === "running";
   const busy = state === "starting" || state === "building";
@@ -70,40 +95,75 @@ function ServiceCard({
     <div
       style={{
         background: "#1e2130",
-        border: "1px solid #2d3148",
+        border: `1px solid ${selected ? "#2d3148" : "#1a1c2e"}`,
         borderRadius: 10,
-        padding: "14px 16px",
+        padding: "12px 14px",
         display: "flex",
         alignItems: "center",
-        gap: 12,
+        gap: 10,
+        opacity: selected ? 1 : 0.6,
+        transition: "opacity 0.15s, border-color 0.15s",
       }}
     >
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={onToggle}
+        title="Include in Start All"
+        style={{ accentColor: "#6366f1", cursor: "pointer", flexShrink: 0 }}
+      />
       <StatusDot state={state} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: 14 }}>{name}</div>
-        <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+        <div style={{ fontWeight: 600, fontSize: 13 }}>{name}</div>
+        <div style={{ fontSize: 11, color: "#64748b", marginTop: 1 }}>
           :{PORTS[name]} &nbsp;·&nbsp;
           <span style={{ color: STATE_COLOR[state] }}>{STATE_LABEL[state]}</span>
         </div>
       </div>
-      <button
-        onClick={running ? onStop : onStart}
-        disabled={busy}
-        style={{
-          padding: "5px 14px",
-          borderRadius: 6,
-          border: "none",
-          cursor: busy ? "not-allowed" : "pointer",
-          background: running ? "#3f1515" : "#143326",
-          color: running ? "#f87171" : "#4ade80",
-          fontWeight: 600,
-          fontSize: 12,
-          opacity: busy ? 0.5 : 1,
-          transition: "opacity 0.15s",
-        }}
-      >
-        {running ? "Stop" : "Start"}
-      </button>
+      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+        {openUrl && running && (
+          <button
+            onClick={() => window.open(openUrl, "_blank")}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 6,
+              border: "1px solid #2d3148",
+              cursor: "pointer",
+              background: "transparent",
+              color: "#94a3b8",
+              fontSize: 11,
+            }}
+          >
+            Open ↗
+          </button>
+        )}
+        <button
+          onClick={running ? onStop : onStart}
+          disabled={busy}
+          style={{
+            padding: "4px 12px",
+            borderRadius: 6,
+            border: "none",
+            cursor: busy ? "not-allowed" : "pointer",
+            background: running ? "#3f1515" : "#143326",
+            color: running ? "#f87171" : "#4ade80",
+            fontWeight: 600,
+            fontSize: 12,
+            opacity: busy ? 0.5 : 1,
+            transition: "opacity 0.15s",
+          }}
+        >
+          {running ? "Stop" : "Start"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({ label }: { label: string }) {
+  return (
+    <div style={{ fontSize: 11, fontWeight: 700, color: "#475569", letterSpacing: "0.08em", marginBottom: 10 }}>
+      {label}
     </div>
   );
 }
@@ -112,10 +172,12 @@ function LogPanel({
   logs,
   selected,
   onSelect,
+  onClear,
 }: {
   logs: Record<string, string[]>;
   selected: string;
   onSelect: (s: string) => void;
+  onClear: () => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const lines = logs[selected] ?? [];
@@ -164,7 +226,7 @@ function LogPanel({
           ))}
         </select>
         <button
-          onClick={() => {}}
+          onClick={onClear}
           style={{
             marginLeft: "auto",
             background: "none",
@@ -191,7 +253,7 @@ function LogPanel({
           wordBreak: "break-all",
         }}
       >
-        {lines.join("\n") || <span style={{ color: "#334155" }}>No output yet.</span>}
+        {lines.length > 0 ? lines.join("\n") : <span style={{ color: "#334155" }}>No output yet.</span>}
         <div ref={bottomRef} />
       </pre>
     </div>
@@ -202,10 +264,27 @@ function App() {
   const [status, setStatus] = useState<StatusMap>({});
   const [logs, setLogs] = useState<Record<string, string[]>>({});
   const [selectedLog, setSelectedLog] = useState("iaccount");
+  const [selection, setSelection] = useState<Record<string, boolean>>(loadSelection);
 
-  const api = useCallback(async (path: string, method = "GET") => {
-    await fetch(path, { method }).catch(() => {});
+  const api = useCallback(async (path: string, method = "GET", body?: unknown) => {
+    await fetch(path, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    }).catch(() => {});
   }, []);
+
+  const toggleSelection = useCallback((name: string) => {
+    setSelection((prev) => {
+      const next = { ...prev, [name]: !prev[name] };
+      localStorage.setItem("dev-services-selection", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const clearLogs = useCallback(() => {
+    setLogs((prev) => ({ ...prev, [selectedLog]: [] }));
+  }, [selectedLog]);
 
   // Poll status every 5s
   useEffect(() => {
@@ -239,6 +318,8 @@ function App() {
 
   const stateOf = (name: string): State => status[name]?.state ?? "stopped";
 
+  const selectedList = ALL_NAMES.filter((n) => selection[n]);
+
   return (
     <>
       <style>{`
@@ -246,17 +327,20 @@ function App() {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.4; }
         }
+        * { box-sizing: border-box; }
       `}</style>
-      <div style={{ maxWidth: 960, margin: "0 auto", padding: "28px 20px" }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 20px" }}>
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", marginBottom: 28 }}>
           <div>
             <h1 style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.5px" }}>Dev Services</h1>
-            <p style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>localhost process manager</p>
+            <p style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>
+              localhost process manager &nbsp;·&nbsp; {selectedList.length}/{ALL_NAMES.length} selected
+            </p>
           </div>
           <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
             <button
-              onClick={() => api("/api/start-all", "POST")}
+              onClick={() => api("/api/start-all", "POST", { selected: selectedList })}
               style={{
                 background: "#143326",
                 color: "#4ade80",
@@ -288,19 +372,19 @@ function App() {
           </div>
         </div>
 
-        {/* Grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}>
+        {/* 3-column grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20, marginBottom: 20 }}>
           {/* Infrastructure */}
           <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#475569", letterSpacing: "0.08em", marginBottom: 10 }}>
-              INFRASTRUCTURE
-            </div>
+            <SectionHeader label="INFRASTRUCTURE" />
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {INFRA.map((name) => (
                 <ServiceCard
                   key={name}
                   name={name}
                   state={stateOf(name)}
+                  selected={selection[name] ?? true}
+                  onToggle={() => toggleSelection(name)}
                   onStart={() => api(`/api/${name}/start`, "POST")}
                   onStop={() => api(`/api/${name}/stop`, "POST")}
                 />
@@ -308,19 +392,38 @@ function App() {
             </div>
           </div>
 
-          {/* Services */}
+          {/* Java Services */}
           <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#475569", letterSpacing: "0.08em", marginBottom: 10 }}>
-              SERVICES
-            </div>
+            <SectionHeader label="SERVICES" />
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {SERVICES.map((name) => (
                 <ServiceCard
                   key={name}
                   name={name}
                   state={stateOf(name)}
+                  selected={selection[name] ?? true}
+                  onToggle={() => toggleSelection(name)}
                   onStart={() => api(`/api/${name}/start`, "POST")}
                   onStop={() => api(`/api/${name}/stop`, "POST")}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Frontend Services */}
+          <div>
+            <SectionHeader label="FRONTENDS" />
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {FRONTENDS.map((name) => (
+                <ServiceCard
+                  key={name}
+                  name={name}
+                  state={stateOf(name)}
+                  selected={selection[name] ?? true}
+                  onToggle={() => toggleSelection(name)}
+                  onStart={() => api(`/api/${name}/start`, "POST")}
+                  onStop={() => api(`/api/${name}/stop`, "POST")}
+                  openUrl={`http://localhost:${FRONTEND_PORT[name]}`}
                 />
               ))}
             </div>
@@ -328,7 +431,12 @@ function App() {
         </div>
 
         {/* Log Panel */}
-        <LogPanel logs={logs} selected={selectedLog} onSelect={setSelectedLog} />
+        <LogPanel
+          logs={logs}
+          selected={selectedLog}
+          onSelect={setSelectedLog}
+          onClear={clearLogs}
+        />
       </div>
     </>
   );

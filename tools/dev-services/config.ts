@@ -13,6 +13,13 @@ export interface JavaService {
   port: number;
 }
 
+export interface FrontendService {
+  name: string;
+  dir: string;
+  port: number;
+  startCmd: string[];
+}
+
 export const infraGroups: InfraGroup[] = [
   {
     name: "postgres-redis",
@@ -26,6 +33,11 @@ export const infraGroups: InfraGroup[] = [
     healthPorts: [9092, 8848],
     displayPorts: "9092, 8848",
   },
+];
+
+export const frontendServices: FrontendService[] = [
+  { name: "ipay",         dir: `${HOME}/IdeaProjects/ipay`,         port: 8089, startCmd: ["bun", "run", "dev"] },
+  { name: "imerchantmng", dir: `${HOME}/IdeaProjects/imerchantmng`, port: 5173, startCmd: ["bun", "run", "dev"] },
 ];
 
 export const services: JavaService[] = [
