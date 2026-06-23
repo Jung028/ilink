@@ -38,7 +38,7 @@ export const infraGroups: InfraGroup[] = [
 
 export const frontendServices: FrontendService[] = [
   { name: "ipay",         dir: `${HOME}/IdeaProjects/ipay`,         port: 8089, startCmd: ["bun", "run", "dev"] },
-  { name: "imerchantmng", dir: `${HOME}/IdeaProjects/imerchantmng`, port: 8081, startCmd: ["bun", "run", "dev"] },
+  { name: "imerchantmng", dir: `${HOME}/IdeaProjects/imerchantmng`, port: 8021, startCmd: ["bun", "run", "dev"] },
 ];
 
 export const services: JavaService[] = [

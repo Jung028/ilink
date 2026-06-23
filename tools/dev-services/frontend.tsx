@@ -34,12 +34,12 @@ const PORTS: Record<string, string> = {
   imerchant: "8188",
   iriskops: "8181",
   ipay: "8089",
-  imerchantmng: "8081",
+  imerchantmng: "8021",
 };
 
 const FRONTEND_PORT: Record<string, number> = {
   ipay: 8089,
-  imerchantmng: 8081,
+  imerchantmng: 8021,
 };
 
 const DEFAULT_SELECTION = Object.fromEntries(ALL_NAMES.map((n) => [n, true]));
