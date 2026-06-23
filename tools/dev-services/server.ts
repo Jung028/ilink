@@ -80,6 +80,26 @@ async function tcpHealthCheck(port: number, timeoutMs = 60000): Promise<boolean>
   return false;
 }
 
+function isPortConflict(msg: string): boolean {
+  const l = msg.toLowerCase();
+  return l.includes("address already in use") || l.includes("eaddrinuse") || l.includes("bind: address");
+}
+
+async function freePort(port: number, service: string): Promise<boolean> {
+  const lsof = Bun.spawn(["lsof", "-ti", `:${port}`], { stdout: "pipe", stderr: "pipe" });
+  const text = await new Response(lsof.stdout).text();
+  await lsof.exited;
+  const pids = text.trim().split("\n").filter(Boolean);
+  if (!pids.length) {
+    pushLog(service, `[auto-fix] No process found on :${port}`);
+    return false;
+  }
+  pushLog(service, `[auto-fix] Port :${port} held by PID ${pids.join(", ")} — killing`);
+  for (const pid of pids) Bun.spawn(["kill", "-9", pid.trim()]);
+  await Bun.sleep(1500);
+  return true;
+}
+
 async function findJar(serviceDir: string): Promise<string | null> {
   const glob = new Bun.Glob("app/web/target/*.jar");
   for await (const file of glob.scan({ cwd: serviceDir })) {
@@ -120,7 +140,7 @@ async function deleteJars(serviceDir: string) {
   }
 }
 
-async function startService(svc: JavaService) {
+async function startService(svc: JavaService, retried = false) {
   if (stateMap.get(svc.name)?.state === "running") return;
   setState(svc.name, "starting");
 
@@ -147,11 +167,20 @@ async function startService(svc: JavaService) {
   let runtimeError = "";
   pipeStream(proc.stdout, svc.name, (last) => { if (last) runtimeError = runtimeError || last; });
   pipeStream(proc.stderr, svc.name, (last) => { if (last) runtimeError = last; });
-  proc.exited.then((code) => {
+  proc.exited.then(async (code) => {
     pushLog(svc.name, `[exit] exited with code ${code}`);
     processMap.delete(svc.name);
     if (code === 0) {
       setState(svc.name, "stopped");
+    } else if (!retried && isPortConflict(runtimeError)) {
+      pushLog(svc.name, `[auto-fix] Port conflict on :${svc.port} — auto-fixing`);
+      const freed = await freePort(svc.port, svc.name);
+      if (freed) {
+        pushLog(svc.name, `[auto-fix] Restarting ${svc.name}…`);
+        startService(svc, true);
+      } else {
+        setState(svc.name, "error", undefined, `Port :${svc.port} conflict — could not free`);
+      }
     } else {
       const msg = `Exited ${code}${runtimeError ? ": " + runtimeError : ""}`;
       setState(svc.name, "error", undefined, msg);
@@ -172,7 +201,7 @@ function stopService(name: string) {
   setState(name, "stopped");
 }
 
-async function startFrontendService(svc: FrontendService) {
+async function startFrontendService(svc: FrontendService, retried = false) {
   if (stateMap.get(svc.name)?.state === "running") return;
   setState(svc.name, "starting");
   pushLog(svc.name, `[start] ${svc.startCmd.join(" ")} in ${svc.dir}`);
@@ -183,12 +212,26 @@ async function startFrontendService(svc: FrontendService) {
   });
   processMap.set(svc.name, proc);
   setState(svc.name, "running", proc.pid);
-  pipeStream(proc.stdout, svc.name);
-  pipeStream(proc.stderr, svc.name);
-  proc.exited.then((code) => {
+  let feError = "";
+  pipeStream(proc.stdout, svc.name, (last) => { if (last) feError = feError || last; });
+  pipeStream(proc.stderr, svc.name, (last) => { if (last) feError = last; });
+  proc.exited.then(async (code) => {
     pushLog(svc.name, `[exit] exited with code ${code}`);
     processMap.delete(svc.name);
-    setState(svc.name, code === 0 ? "stopped" : "error");
+    if (code === 0) {
+      setState(svc.name, "stopped");
+    } else if (!retried && isPortConflict(feError)) {
+      pushLog(svc.name, `[auto-fix] Port conflict on :${svc.port} — auto-fixing`);
+      const freed = await freePort(svc.port, svc.name);
+      if (freed) {
+        pushLog(svc.name, `[auto-fix] Restarting ${svc.name}…`);
+        startFrontendService(svc, true);
+      } else {
+        setState(svc.name, "error", undefined, `Port :${svc.port} conflict — could not free`);
+      }
+    } else {
+      setState(svc.name, "error", undefined, `Exited ${code}${feError ? ": " + feError : ""}`);
+    }
   });
 }
 
