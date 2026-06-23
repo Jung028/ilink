@@ -47,6 +47,11 @@ const FRONTEND_PATH: Record<string, string> = {
   imerchantmng: "",
 };
 
+const FRONTEND_DEPS: Record<string, string[]> = {
+  ipay: ["iuser"],
+  imerchantmng: [],
+};
+
 const DEFAULT_SELECTION = Object.fromEntries(ALL_NAMES.map((n) => [n, true]));
 
 function loadSelection(): Record<string, boolean> {
@@ -87,6 +92,7 @@ function ServiceCard({
   onStop,
   onRebuild,
   openUrl,
+  deps,
 }: {
   name: string;
   state: State;
@@ -97,6 +103,7 @@ function ServiceCard({
   onStop: () => void;
   onRebuild?: () => void;
   openUrl?: string;
+  deps?: Array<{ name: string; state: State }>;
 }) {
   const running = state === "running";
   const busy = state === "starting" || state === "building";
@@ -130,6 +137,13 @@ function ServiceCard({
             :{PORTS[name]} &nbsp;·&nbsp;
             <span style={{ color: STATE_COLOR[state] }}>{STATE_LABEL[state]}</span>
           </div>
+          {deps && deps.length > 0 && (
+            <div style={{ fontSize: 10, display: "flex", gap: 6, marginTop: 2, flexWrap: "wrap" }}>
+              {deps.map((d) => (
+                <span key={d.name} style={{ color: STATE_COLOR[d.state] }}>↳ {d.name}</span>
+              ))}
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
           {openUrl && running && (
@@ -622,6 +636,7 @@ function App() {
                   onStart={() => api(`/api/${name}/start`, "POST")}
                   onStop={() => api(`/api/${name}/stop`, "POST")}
                   openUrl={`http://localhost:${FRONTEND_PORT[name]}${FRONTEND_PATH[name] ?? ""}`}
+                  deps={(FRONTEND_DEPS[name] ?? []).map((d) => ({ name: d, state: stateOf(d) }))}
                 />
               ))}
             </div>

@@ -255,6 +255,17 @@ function stopService(name: string) {
 
 async function startFrontendService(svc: FrontendService, retried = false) {
   if (stateMap.get(svc.name)?.state === "running") return;
+
+  if (svc.dependencies?.length) {
+    for (const depName of svc.dependencies) {
+      const dep = services.find((s) => s.name === depName);
+      if (dep && stateMap.get(dep.name)?.state !== "running") {
+        pushLog(svc.name, `[dep] Starting dependency: ${depName}`);
+        await startService(dep);
+      }
+    }
+  }
+
   setState(svc.name, "starting");
   pushLog(svc.name, `[start] ${svc.startCmd.join(" ")} in ${svc.dir}`);
   const proc = Bun.spawn(svc.startCmd, {

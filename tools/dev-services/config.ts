@@ -19,6 +19,7 @@ export interface FrontendService {
   dir: string;
   port: number;
   startCmd: string[];
+  dependencies?: string[];
 }
 
 export const infraGroups: InfraGroup[] = [
@@ -37,7 +38,7 @@ export const infraGroups: InfraGroup[] = [
 ];
 
 export const frontendServices: FrontendService[] = [
-  { name: "ipay",         dir: `${HOME}/IdeaProjects/ipay`,         port: 8089, startCmd: ["bun", "run", "dev"] },
+  { name: "ipay",         dir: `${HOME}/IdeaProjects/ipay`,         port: 8089, startCmd: ["bun", "run", "dev"], dependencies: ["iuser"] },
   { name: "imerchantmng", dir: `${HOME}/IdeaProjects/imerchantmng`, port: 8021, startCmd: ["bun", "run", "dev"] },
 ];
 
