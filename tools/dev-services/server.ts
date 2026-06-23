@@ -7,6 +7,7 @@ type State = "running" | "stopped" | "starting" | "building" | "error";
 interface ServiceState {
   state: State;
   pid?: number;
+  lastError?: string;
 }
 
 const processMap = new Map<string, ReturnType<typeof Bun.spawn>>();
@@ -27,26 +28,39 @@ function pushLog(service: string, line: string) {
   for (const ws of wsClients) ws.send(msg);
 }
 
-function setState(name: string, state: State, pid?: number) {
-  stateMap.set(name, { state, pid });
-  const msg = JSON.stringify({ type: "state", service: name, state, pid });
+function setState(name: string, state: State, pid?: number, lastError?: string) {
+  const prev = stateMap.get(name);
+  stateMap.set(name, { state, pid, lastError: lastError ?? (state === "error" ? prev?.lastError : undefined) });
+  const msg = JSON.stringify({ type: "state", service: name, state, pid, lastError });
   for (const ws of wsClients) ws.send(msg);
 }
 
-async function pipeStream(stream: ReadableStream<Uint8Array> | null, service: string) {
+async function pipeStream(
+  stream: ReadableStream<Uint8Array> | null,
+  service: string,
+  onError?: (lastLine: string) => void,
+) {
   if (!stream) return;
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let partial = "";
+  let lastNonEmpty = "";
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     const chunk = partial + decoder.decode(value, { stream: true });
     const lines = chunk.split("\n");
     partial = lines.pop() ?? "";
-    for (const line of lines) pushLog(service, line);
+    for (const line of lines) {
+      pushLog(service, line);
+      if (line.trim()) lastNonEmpty = line.trim();
+    }
   }
-  if (partial) pushLog(service, partial);
+  if (partial) {
+    pushLog(service, partial);
+    if (partial.trim()) lastNonEmpty = partial.trim();
+  }
+  onError?.(lastNonEmpty);
 }
 
 async function tcpHealthCheck(port: number, timeoutMs = 60000): Promise<boolean> {
@@ -84,16 +98,26 @@ async function buildService(svc: JavaService): Promise<boolean> {
     stdout: "pipe",
     stderr: "pipe",
   });
-  pipeStream(proc.stdout, svc.name);
-  pipeStream(proc.stderr, svc.name);
+  let buildError = "";
+  pipeStream(proc.stdout, svc.name, (last) => { if (last) buildError = buildError || last; });
+  pipeStream(proc.stderr, svc.name, (last) => { if (last) buildError = last; });
   const code = await proc.exited;
   if (code !== 0) {
-    setState(svc.name, "error");
+    const msg = `Build failed (exit ${code})${buildError ? ": " + buildError : ""}`;
     pushLog(svc.name, `[build] FAILED (exit ${code})`);
+    setState(svc.name, "error", undefined, msg);
     return false;
   }
   pushLog(svc.name, "[build] SUCCESS");
   return true;
+}
+
+async function deleteJars(serviceDir: string) {
+  const glob = new Bun.Glob("app/web/target/*.jar");
+  for await (const file of glob.scan({ cwd: serviceDir })) {
+    await Bun.file(join(serviceDir, file)).delete?.();
+    Bun.spawn(["rm", "-f", join(serviceDir, file)]);
+  }
 }
 
 async function startService(svc: JavaService) {
@@ -106,7 +130,7 @@ async function startService(svc: JavaService) {
     if (!ok) return;
     jar = await findJar(svc.dir);
     if (!jar) {
-      setState(svc.name, "error");
+      setState(svc.name, "error", undefined, "JAR not found after build");
       pushLog(svc.name, "[error] JAR not found after build");
       return;
     }
@@ -120,13 +144,26 @@ async function startService(svc: JavaService) {
   });
   processMap.set(svc.name, proc);
   setState(svc.name, "running", proc.pid);
-  pipeStream(proc.stdout, svc.name);
-  pipeStream(proc.stderr, svc.name);
+  let runtimeError = "";
+  pipeStream(proc.stdout, svc.name, (last) => { if (last) runtimeError = runtimeError || last; });
+  pipeStream(proc.stderr, svc.name, (last) => { if (last) runtimeError = last; });
   proc.exited.then((code) => {
     pushLog(svc.name, `[exit] exited with code ${code}`);
     processMap.delete(svc.name);
-    setState(svc.name, code === 0 ? "stopped" : "error");
+    if (code === 0) {
+      setState(svc.name, "stopped");
+    } else {
+      const msg = `Exited ${code}${runtimeError ? ": " + runtimeError : ""}`;
+      setState(svc.name, "error", undefined, msg);
+    }
   });
+}
+
+async function rebuildService(svc: JavaService) {
+  stopService(svc.name);
+  pushLog(svc.name, "[rebuild] Deleting old JARs…");
+  await deleteJars(svc.dir);
+  await startService(svc);
 }
 
 function stopService(name: string) {
@@ -251,6 +288,14 @@ Bun.serve({
         return Response.json({ error: "not found" }, { status: 404 });
       },
     },
+    "/api/:name/rebuild": {
+      POST: (req: Request & { params: { name: string } }) => {
+        const { name } = req.params;
+        const svc = services.find((s) => s.name === name);
+        if (svc) { rebuildService(svc); return Response.json({ ok: true }); }
+        return Response.json({ error: "not a java service" }, { status: 400 });
+      },
+    },
     "/api/:name/stop": {
       POST: (req: Request & { params: { name: string } }) => {
         const { name } = req.params;
@@ -277,7 +322,7 @@ Bun.serve({
         for (const line of lines.slice(-100)) ws.send(JSON.stringify({ service, line }));
       }
       for (const [service, s] of stateMap) {
-        ws.send(JSON.stringify({ type: "state", service, state: s.state, pid: s.pid }));
+        ws.send(JSON.stringify({ type: "state", service, state: s.state, pid: s.pid, lastError: s.lastError }));
       }
     },
     message() {},

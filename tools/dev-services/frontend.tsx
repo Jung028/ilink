@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 
 type State = "running" | "stopped" | "starting" | "building" | "error";
-type StatusMap = Record<string, { state: State; pid?: number }>;
+type StatusMap = Record<string, { state: State; pid?: number; lastError?: string }>;
 
 const STATE_COLOR: Record<State, string> = {
   running: "#22c55e",
@@ -75,87 +75,131 @@ function StatusDot({ state }: { state: State }) {
 function ServiceCard({
   name,
   state,
+  lastError,
   selected,
   onToggle,
   onStart,
   onStop,
+  onRebuild,
   openUrl,
 }: {
   name: string;
   state: State;
+  lastError?: string;
   selected: boolean;
   onToggle: () => void;
   onStart: () => void;
   onStop: () => void;
+  onRebuild?: () => void;
   openUrl?: string;
 }) {
   const running = state === "running";
   const busy = state === "starting" || state === "building";
+  const errored = state === "error";
   return (
     <div
       style={{
-        background: "#1e2130",
-        border: `1px solid ${selected ? "#2d3148" : "#1a1c2e"}`,
+        background: errored ? "#1a0f0f" : "#1e2130",
+        border: `1px solid ${errored ? "#5c1a1a" : selected ? "#2d3148" : "#1a1c2e"}`,
         borderRadius: 10,
         padding: "12px 14px",
         display: "flex",
-        alignItems: "center",
-        gap: 10,
+        flexDirection: "column",
+        gap: 8,
         opacity: selected ? 1 : 0.6,
         transition: "opacity 0.15s, border-color 0.15s",
       }}
     >
-      <input
-        type="checkbox"
-        checked={selected}
-        onChange={onToggle}
-        title="Include in Start All"
-        style={{ accentColor: "#6366f1", cursor: "pointer", flexShrink: 0 }}
-      />
-      <StatusDot state={state} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: 13 }}>{name}</div>
-        <div style={{ fontSize: 11, color: "#64748b", marginTop: 1 }}>
-          :{PORTS[name]} &nbsp;·&nbsp;
-          <span style={{ color: STATE_COLOR[state] }}>{STATE_LABEL[state]}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggle}
+          title="Include in Start All"
+          style={{ accentColor: "#6366f1", cursor: "pointer", flexShrink: 0 }}
+        />
+        <StatusDot state={state} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 13 }}>{name}</div>
+          <div style={{ fontSize: 11, color: "#64748b", marginTop: 1 }}>
+            :{PORTS[name]} &nbsp;·&nbsp;
+            <span style={{ color: STATE_COLOR[state] }}>{STATE_LABEL[state]}</span>
+          </div>
         </div>
-      </div>
-      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-        {openUrl && running && (
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          {openUrl && running && (
+            <button
+              onClick={() => window.open(openUrl, "_blank")}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 6,
+                border: "1px solid #2d3148",
+                cursor: "pointer",
+                background: "transparent",
+                color: "#94a3b8",
+                fontSize: 11,
+              }}
+            >
+              Open ↗
+            </button>
+          )}
+          {onRebuild && (errored || (!running && !busy)) && (
+            <button
+              onClick={onRebuild}
+              disabled={busy}
+              title="Delete JAR and rebuild from source"
+              style={{
+                padding: "4px 10px",
+                borderRadius: 6,
+                border: "1px solid #2d3148",
+                cursor: busy ? "not-allowed" : "pointer",
+                background: "transparent",
+                color: "#f97316",
+                fontSize: 11,
+                opacity: busy ? 0.5 : 1,
+              }}
+            >
+              Rebuild ↺
+            </button>
+          )}
           <button
-            onClick={() => window.open(openUrl, "_blank")}
+            onClick={running ? onStop : onStart}
+            disabled={busy}
             style={{
-              padding: "4px 10px",
+              padding: "4px 12px",
               borderRadius: 6,
-              border: "1px solid #2d3148",
-              cursor: "pointer",
-              background: "transparent",
-              color: "#94a3b8",
-              fontSize: 11,
+              border: "none",
+              cursor: busy ? "not-allowed" : "pointer",
+              background: running ? "#3f1515" : "#143326",
+              color: running ? "#f87171" : "#4ade80",
+              fontWeight: 600,
+              fontSize: 12,
+              opacity: busy ? 0.5 : 1,
+              transition: "opacity 0.15s",
             }}
           >
-            Open ↗
+            {running ? "Stop" : "Start"}
           </button>
-        )}
-        <button
-          onClick={running ? onStop : onStart}
-          disabled={busy}
-          style={{
-            padding: "4px 12px",
-            borderRadius: 6,
-            border: "none",
-            cursor: busy ? "not-allowed" : "pointer",
-            background: running ? "#3f1515" : "#143326",
-            color: running ? "#f87171" : "#4ade80",
-            fontWeight: 600,
-            fontSize: 12,
-            opacity: busy ? 0.5 : 1,
-            transition: "opacity 0.15s",
-          }}
-        >
-          {running ? "Stop" : "Start"}
-        </button>
+        </div>
       </div>
+      {errored && lastError && (
+        <div
+          style={{
+            fontSize: 11,
+            color: "#f87171",
+            background: "#2a0f0f",
+            borderRadius: 5,
+            padding: "5px 8px",
+            fontFamily: "monospace",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+          title={lastError}
+        >
+          {lastError}
+        </div>
+      )}
     </div>
   );
 }
@@ -299,24 +343,42 @@ function App() {
     return () => clearInterval(id);
   }, []);
 
-  // WebSocket for live state + logs
+  // WebSocket for live state + logs, with auto-reconnect
   useEffect(() => {
-    const ws = new WebSocket(`ws://${location.host}/ws`);
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      if (msg.type === "state") {
-        setStatus((prev) => ({ ...prev, [msg.service]: { state: msg.state, pid: msg.pid } }));
-      } else {
-        setLogs((prev) => {
-          const existing = prev[msg.service] ?? [];
-          return { ...prev, [msg.service]: [...existing.slice(-499), msg.line] };
-        });
-      }
-    };
-    return () => ws.close();
+    let ws: WebSocket;
+    let dead = false;
+
+    function connect() {
+      ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "state") {
+          setStatus((prev) => {
+            const prevState = prev[msg.service]?.state;
+            // auto-switch log panel when a service transitions to error
+            if (msg.state === "error" && prevState !== "error") {
+              setSelectedLog(msg.service);
+            }
+            return { ...prev, [msg.service]: { state: msg.state, pid: msg.pid, lastError: msg.lastError } };
+          });
+        } else {
+          setLogs((prev) => {
+            const existing = prev[msg.service] ?? [];
+            return { ...prev, [msg.service]: [...existing.slice(-499), msg.line] };
+          });
+        }
+      };
+      ws.onclose = () => {
+        if (!dead) setTimeout(connect, 2000);
+      };
+    }
+
+    connect();
+    return () => { dead = true; ws?.close(); };
   }, []);
 
   const stateOf = (name: string): State => status[name]?.state ?? "stopped";
+  const errorOf = (name: string) => status[name]?.lastError;
 
   const selectedList = ALL_NAMES.filter((n) => selection[n]);
 
@@ -383,6 +445,7 @@ function App() {
                   key={name}
                   name={name}
                   state={stateOf(name)}
+                  lastError={errorOf(name)}
                   selected={selection[name] ?? true}
                   onToggle={() => toggleSelection(name)}
                   onStart={() => api(`/api/${name}/start`, "POST")}
@@ -401,10 +464,12 @@ function App() {
                   key={name}
                   name={name}
                   state={stateOf(name)}
+                  lastError={errorOf(name)}
                   selected={selection[name] ?? true}
                   onToggle={() => toggleSelection(name)}
                   onStart={() => api(`/api/${name}/start`, "POST")}
                   onStop={() => api(`/api/${name}/stop`, "POST")}
+                  onRebuild={() => api(`/api/${name}/rebuild`, "POST")}
                 />
               ))}
             </div>
@@ -419,6 +484,7 @@ function App() {
                   key={name}
                   name={name}
                   state={stateOf(name)}
+                  lastError={errorOf(name)}
                   selected={selection[name] ?? true}
                   onToggle={() => toggleSelection(name)}
                   onStart={() => api(`/api/${name}/start`, "POST")}
