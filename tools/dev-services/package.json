@@ -1,0 +1,16 @@
+{
+  "name": "dev-services",
+  "private": true,
+  "scripts": {
+    "start": "bun server.ts"
+  },
+  "dependencies": {
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "bun-types": "latest"
+  }
+}
