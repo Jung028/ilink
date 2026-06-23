@@ -104,7 +104,6 @@ function isSofaConflict(logs: string[]): boolean {
 function isNoMainManifest(logs: string[]): boolean {
   return logs.some((l) => l.includes("no main manifest attribute"));
 }
-}
 
 async function freePort(port: number, service: string): Promise<boolean> {
   const lsof = Bun.spawn(["lsof", "-ti", `:${port}`], { stdout: "pipe", stderr: "pipe" });
