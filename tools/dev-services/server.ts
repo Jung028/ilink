@@ -5,6 +5,10 @@ import Anthropic from "@anthropic-ai/sdk";
 
 const anthropic = new Anthropic();
 
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.warn("[warn] ANTHROPIC_API_KEY is not set — Claude chat panel will not work");
+}
+
 type State = "running" | "stopped" | "starting" | "building" | "error";
 
 interface ServiceState {
@@ -97,6 +101,11 @@ function isSofaConflict(logs: string[]): boolean {
   return logs.some((l) => l.includes("SOFA-BOOT-01-03004") || l.includes("Failed to resolve and active component"));
 }
 
+function isNoMainManifest(logs: string[]): boolean {
+  return logs.some((l) => l.includes("no main manifest attribute"));
+}
+}
+
 async function freePort(port: number, service: string): Promise<boolean> {
   const lsof = Bun.spawn(["lsof", "-ti", `:${port}`], { stdout: "pipe", stderr: "pipe" });
   const text = await new Response(lsof.stdout).text();
@@ -142,6 +151,26 @@ async function buildService(svc: JavaService): Promise<boolean> {
     return false;
   }
   pushLog(svc.name, "[build] SUCCESS");
+  return true;
+}
+
+async function buildWithRepackage(svc: JavaService): Promise<boolean> {
+  setState(svc.name, "building");
+  pushLog(svc.name, "[build] mvn clean package spring-boot:repackage -pl app/web -DskipTests");
+  const proc = Bun.spawn(
+    ["mvn", "clean", "package", "spring-boot:repackage", "-pl", "app/web", "-DskipTests"],
+    { cwd: svc.dir, stdout: "pipe", stderr: "pipe" }
+  );
+  let err = "";
+  pipeStream(proc.stdout, svc.name, (last) => { if (last) err = err || last; });
+  pipeStream(proc.stderr, svc.name, (last) => { if (last) err = last; });
+  const code = await proc.exited;
+  if (code !== 0) {
+    setState(svc.name, "error", undefined, `Repackage failed (exit ${code})${err ? ": " + err : ""}`);
+    pushLog(svc.name, `[build] REPACKAGE FAILED (exit ${code})`);
+    return false;
+  }
+  pushLog(svc.name, "[build] REPACKAGE SUCCESS");
   return true;
 }
 
@@ -196,6 +225,11 @@ async function startService(svc: JavaService, retried = false) {
         pushLog(svc.name, `[auto-fix] SOFA-BOOT-01-03004 detected — freeing ports :${portsToFree.join(", ")} and restarting`);
         await freePorts(portsToFree, svc.name);
         startService(svc, true);
+      } else if (isNoMainManifest(recentLogs)) {
+        pushLog(svc.name, "[auto-fix] No main manifest — forcing spring-boot:repackage");
+        await deleteJars(svc.dir);
+        const ok = await buildWithRepackage(svc);
+        if (ok) startService(svc, true);
       } else {
         const msg = `Exited ${code}${runtimeError ? ": " + runtimeError : ""}`;
         setState(svc.name, "error", undefined, msg);
@@ -363,6 +397,12 @@ Bun.serve({
         const enc = new TextEncoder();
         const stream = new ReadableStream({
           async start(ctrl) {
+            if (!process.env.ANTHROPIC_API_KEY) {
+              ctrl.enqueue(enc.encode(`data: ${JSON.stringify({ text: "⚠️ ANTHROPIC_API_KEY is not set. Start the server with: ANTHROPIC_API_KEY=sk-... bun server.ts" })}\n\n`));
+              ctrl.enqueue(enc.encode("data: [DONE]\n\n"));
+              ctrl.close();
+              return;
+            }
             try {
               const s = anthropic.messages.stream({
                 model: "claude-sonnet-4-6",
