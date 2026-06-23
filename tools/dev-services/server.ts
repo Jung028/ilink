@@ -85,19 +85,24 @@ function isPortConflict(msg: string): boolean {
   return l.includes("address already in use") || l.includes("eaddrinuse") || l.includes("bind: address");
 }
 
+function isSofaConflict(logs: string[]): boolean {
+  return logs.some((l) => l.includes("SOFA-BOOT-01-03004") || l.includes("Failed to resolve and active component"));
+}
+
 async function freePort(port: number, service: string): Promise<boolean> {
   const lsof = Bun.spawn(["lsof", "-ti", `:${port}`], { stdout: "pipe", stderr: "pipe" });
   const text = await new Response(lsof.stdout).text();
   await lsof.exited;
   const pids = text.trim().split("\n").filter(Boolean);
-  if (!pids.length) {
-    pushLog(service, `[auto-fix] No process found on :${port}`);
-    return false;
-  }
+  if (!pids.length) return false;
   pushLog(service, `[auto-fix] Port :${port} held by PID ${pids.join(", ")} — killing`);
   for (const pid of pids) Bun.spawn(["kill", "-9", pid.trim()]);
-  await Bun.sleep(1500);
   return true;
+}
+
+async function freePorts(ports: number[], service: string): Promise<void> {
+  for (const port of ports) await freePort(port, service);
+  await Bun.sleep(1500);
 }
 
 async function findJar(serviceDir: string): Promise<string | null> {
@@ -172,14 +177,20 @@ async function startService(svc: JavaService, retried = false) {
     processMap.delete(svc.name);
     if (code === 0) {
       setState(svc.name, "stopped");
-    } else if (!retried && isPortConflict(runtimeError)) {
-      pushLog(svc.name, `[auto-fix] Port conflict on :${svc.port} — auto-fixing`);
-      const freed = await freePort(svc.port, svc.name);
-      if (freed) {
-        pushLog(svc.name, `[auto-fix] Restarting ${svc.name}…`);
+    } else if (!retried) {
+      const recentLogs = logBuffer.get(svc.name) ?? [];
+      const portsToFree = [svc.port, ...(svc.boltPort ? [svc.boltPort] : [])];
+      if (isPortConflict(runtimeError)) {
+        pushLog(svc.name, `[auto-fix] Port conflict on :${svc.port} — freeing and restarting`);
+        await freePorts([svc.port], svc.name);
+        startService(svc, true);
+      } else if (isSofaConflict(recentLogs)) {
+        pushLog(svc.name, `[auto-fix] SOFA-BOOT-01-03004 detected — freeing ports :${portsToFree.join(", ")} and restarting`);
+        await freePorts(portsToFree, svc.name);
         startService(svc, true);
       } else {
-        setState(svc.name, "error", undefined, `Port :${svc.port} conflict — could not free`);
+        const msg = `Exited ${code}${runtimeError ? ": " + runtimeError : ""}`;
+        setState(svc.name, "error", undefined, msg);
       }
     } else {
       const msg = `Exited ${code}${runtimeError ? ": " + runtimeError : ""}`;

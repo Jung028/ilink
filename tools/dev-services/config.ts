@@ -11,6 +11,7 @@ export interface JavaService {
   name: string;
   dir: string;
   port: number;
+  boltPort?: number;
 }
 
 export interface FrontendService {
@@ -41,9 +42,9 @@ export const frontendServices: FrontendService[] = [
 ];
 
 export const services: JavaService[] = [
-  { name: "iaccount",  dir: `${HOME}/IdeaProjects/iaccount`,  port: 8887 },
-  { name: "iuser",     dir: `${HOME}/IdeaProjects/iuser`,     port: 8085 },
-  { name: "iwallet",   dir: `${HOME}/IdeaProjects/iwallet`,   port: 8180 },
-  { name: "imerchant", dir: `${HOME}/IdeaProjects/imerchant`, port: 8188 },
-  { name: "iriskops",  dir: `${HOME}/IdeaProjects/iriskops`,  port: 8181 },
+  { name: "iaccount",  dir: `${HOME}/IdeaProjects/iaccount`,  port: 8887, boltPort: 12200 },
+  { name: "iuser",     dir: `${HOME}/IdeaProjects/iuser`,     port: 8085, boltPort: 12201 },
+  { name: "iwallet",   dir: `${HOME}/IdeaProjects/iwallet`,   port: 8180, boltPort: 12202 },
+  { name: "imerchant", dir: `${HOME}/IdeaProjects/imerchant`, port: 8188, boltPort: 12202 },
+  { name: "iriskops",  dir: `${HOME}/IdeaProjects/iriskops`,  port: 8181, boltPort: 12202 },
 ];
